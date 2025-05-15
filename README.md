@@ -1,10 +1,21 @@
-# PowerShell Prometheus Client
+# PowerShell Prometheus Client (PowerShell 7 Fork)
 
 [![](https://img.shields.io/powershellgallery/v/PrometheusExporter.svg)](https://www.powershellgallery.com/packages/PrometheusExporter)
 
-This Powershell module makes it easy to build a custom prometheus exporter based on PowerShell.
+> ⚠️ **This is a fork of the original [PrometheusExporter](https://github.com/lukaspieper/PrometheusExporter) project.**  
+> It has been modernized for **PowerShell 7+** with support for background execution, async HTTP handling, structured logging, and improved script block handling.
 
-It's inspired and based on the Go client and works in sort of the same way.
+---
+
+## 🚀 Key Differences in This Fork
+
+- ✅ Requires **PowerShell 7.0 or later**
+- ✅ Uses `System.Net.HttpListener` with async support
+- ✅ Adds a `/healthz` endpoint
+- ✅ Captures and logs output from collectors (`Write-Output`, `Write-Error`, `Write-Information`, etc.)
+- ✅ Follows modern PowerShell best practices (strict mode, typed classes, formatting)
+
+---
 
 ## Installing
 

@@ -25,7 +25,7 @@ Copyright = '(c) 2020 Joris Beckers. All rights reserved.'
 Description = 'Prometheus instrumentation library for Powershell applications'
 
 # Minimum version of the Windows PowerShell engine required by this module
-PowerShellVersion = '5.0'
+PowerShellVersion = '7.0'
 
 # Name of the Windows PowerShell host required by this module
 # PowerShellHostName = ''

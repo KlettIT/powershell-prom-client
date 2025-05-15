@@ -1,4 +1,3 @@
-# List of valid metric types
 enum MetricType {
     counter
     gauge
@@ -6,31 +5,29 @@ enum MetricType {
     summary
 }
 
-# Metric descriptor class
 class MetricDesc {
-    [String]     $Name
-    [String]     $Help
+    [string]   $Name
+    [string]   $Help
     [MetricType] $Type
-    [string[]]   $Labels
+    [string[]] $Labels
 
-    MetricDesc([String] $Name, [MetricType] $Type, [String] $Help, [string[]] $Labels) {
-        if (-Not $this.isValidName($Name)) {
+    MetricDesc([string] $Name, [MetricType] $Type, [string] $Help, [string[]] $Labels) {
+        if (-not $this.IsValidName($Name)) {
             throw "Not a valid metric name: $Name"
         }
-        foreach ($Label in $Labels) {
-            if (-Not $this.isValidName($Label)) {
-                throw "Not a valid label name: $Label"
+        foreach ($label in $Labels) {
+            if (-not $this.IsValidName($label)) {
+                throw "Not a valid label name: $label"
             }
         }
         $this.Name = $Name
         $this.Type = $Type
-        $this.Help = $Help -replace "[\r\n]+", " "  # Strip out new lines
+        $this.Help = $Help -replace "[\r\n]+", " " # Strip out new lines
         $this.Labels = $Labels
     }
 
-    hidden [bool] isValidName([string] $Name) {
-        # Notice the : is removed from the regex as those should not be used by exporters
-        # according to the documentation
+    hidden [bool] IsValidName([string] $Name) {
+        # Prometheus metric/label name regex: ^[a-zA-Z_][a-zA-Z0-9_]*$
         return $Name -match "^[a-zA-Z_][a-zA-Z0-9_]*$"
     }
 }
@@ -40,175 +37,198 @@ class Metric {
     [float]      $Value
     [string[]]   $Labels
 
-    Metric([MetricDesc] $Descriptor, [Float] $Value, [string[]] $Labels) {
+    Metric([MetricDesc] $Descriptor, [float] $Value, [string[]] $Labels) {
+        if ($Descriptor.Labels.Count -ne $Labels.Count) {
+            throw "Label count mismatch: Descriptor has $($Descriptor.Labels.Count), Metric has $($Labels.Count)"
+        }
         $this.Descriptor = $Descriptor
         $this.Value = $Value
         $this.Labels = $Labels
     }
 
-    [String] ToString() {
-        $FinalLabels = [System.Collections.Generic.List[String]]::new()
+    [string] ToString() {
         if ($this.Descriptor.Labels.Count -gt 0) {
-            if ($this.Descriptor.Labels.Count -ne $this.Labels.Count) {
-                throw "Less metric labels specified than there are labels in the descriptor"
-            }
-            for ($i = 0; $i -lt $this.Descriptor.Labels.Count; $i++) {
+            $labelPairs = for ($i = 0; $i -lt $this.Descriptor.Labels.Count; $i++) {
                 $l = $this.Descriptor.Labels[$i]
                 $v = $this.Labels[$i]
+                # Escape backslash, double quote and newlines per Prometheus exposition format
                 $v = $v.Replace("\", "\\").Replace("""", "\""").Replace("`n", "\n")
-                $FinalLabels.Add("$l=`"$v`"")
+                "$l=`"$v`""
             }
-            $StringLabels = $FinalLabels -join ","
-            $StringLabels = "{$StringLabels}"
-        } else {
-            $StringLabels = ""
+            $labelStr = "{" + ($labelPairs -join ",") + "}"
         }
-
-        return $this.Descriptor.Name + $StringLabels + " " + $this.Value
+        else {
+            $labelStr = ""
+        }
+        return "$($this.Descriptor.Name)$labelStr $($this.Value)"
     }
 }
 
 class Channel {
-    $Metrics = [System.Collections.Generic.List[Metric]]::new()
+    [System.Collections.Generic.List[Metric]] $Metrics = [System.Collections.Generic.List[Metric]]::new()
 
-    AddMetrics([Metric[]] $Metrics) {
-        $this.Metrics.AddRange($Metrics)
+    [void] AddMetrics([Metric[]] $metrics) {
+        $this.Metrics.AddRange($metrics)
     }
 
-    [String] ToString() {
-        $Lines = [System.Collections.Generic.List[String]]::new()
-        $LastDescriptor = $null
+    [string] ToString() {
+        $lines = [System.Collections.Generic.List[string]]::new()
+        $lastDesc = $null
         foreach ($m in $this.Metrics) {
-            if ($m.Descriptor -ne $LastDescriptor) {
-                $LastDescriptor = $m.Descriptor
-                $name = $LastDescriptor.Name
-                $help = $LastDescriptor.Help
-                $type = $LastDescriptor.Type
-                $Lines.Add("# HELP $name $help")
-                $Lines.Add("# TYPE $name $type")
+            if ($m.Descriptor -ne $lastDesc) {
+                $lastDesc = $m.Descriptor
+                $lines.Add("# HELP $($lastDesc.Name) $($lastDesc.Help)")
+                $lines.Add("# TYPE $($lastDesc.Name) $($lastDesc.Type)")
             }
-            $Lines.Add([String]$m)
+            $lines.Add($m.ToString())
         }
-        return $Lines -join "`n"
+        return $lines -join "`n"
     }
 }
 
 class Exporter {
-    $Collectors = [System.Collections.Generic.List[ScriptBlock]]::new()
-    [UInt32] $Port
+    [System.Collections.Generic.List[ScriptBlock]] $Collectors = [System.Collections.Generic.List[ScriptBlock]]::new()
+    [uint32] $Port
 
-    Exporter ([UInt32] $Port) {
+    Exporter([uint32] $Port) {
         $this.Port = $Port
     }
 
-    Register ([ScriptBlock] $Collector) {
+    [void] Register([ScriptBlock] $Collector) {
         $this.Collectors.Add($Collector)
     }
 
-    [String] Collect () {
-        $ch = [Channel]::new()
-        foreach ($c in $this.Collectors) {
-            $ch.AddMetrics($c.Invoke())
+    [string] Collect() {
+        [Metric[]] $collectedMetrics = @()
+        foreach ($collector in $this.Collectors) {
+            try {
+                $output = & $collector *>&1
+
+                foreach ($item in $output) {
+                    if ($item -is [Metric]) {
+                        $collectedMetrics += $item
+                    }
+                    else {
+                        # Print Non-Metric Messages from Collector
+                        New-LogMessage -Msg ("[Collector] {0}" -f $item.ToString())
+                    }
+                }
+            }
+            catch {
+                New-LogMessage -Msg ("[ERR] [Collector] {0}" -f $_)
+            }
         }
-        return [String]$ch
+
+        $channel = [Channel]::new()
+        $channel.AddMetrics($collectedMetrics)
+        return $channel.ToString()
     }
 
-    Start () {
-        [Console]::TreatControlCAsInput = $True
+    [void] Start() {
+        $listener = [System.Net.HttpListener]::new()
+        $prefix = "http://+:$($this.Port)/"
+        $listener.Prefixes.Add($prefix)
+        $listener.Start()
 
-        $Http = [System.Net.HttpListener]::new()
-        $Prefix = 'http://+:{0}/' -f $this.Port
-        $Http.Prefixes.Add($Prefix)
-        $Http.Start()
-        $Error.Clear()
-
-        New-LogMessage -Msg ("Exporter started listening on $Prefix")
+        New-LogMessage -Msg "Exporter listening on $prefix"
 
         try {
-            while ($Http.IsListening) {
-                $ContextAsync = $http.GetContextAsync()
-                while (-not $ContextAsync.AsyncWaitHandle.WaitOne(200)) {
-                    if ([console]::KeyAvailable) {
-                        $key = [system.console]::readkey($true)
-                        if (($key.modifiers -band [consolemodifiers]"control") -and ($key.key -eq "C")) {
-                            Write-Warning "Quitting, user pressed control C..."
-                            Return
+            while ($listener.IsListening) {
+                $context = $listener.GetContextAsync().GetAwaiter().GetResult()
+                $request = $context.Request
+                $response = $context.Response
+
+                try {
+                    switch ($request.HttpMethod) {
+                        'GET' {
+                            switch ($request.Url.AbsolutePath) {
+                                '/' {
+                                    $metricsText = $this.Collect()
+                                    $response.ContentType = "text/plain; version=0.0.4; charset=utf-8"
+                                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($metricsText)
+                                    $response.ContentLength64 = $bytes.Length
+                                    $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                                }
+                                '/metrics' {
+                                    $metricsText = $this.Collect()
+                                    $response.ContentType = "text/plain; version=0.0.4; charset=utf-8"
+                                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($metricsText)
+                                    $response.ContentLength64 = $bytes.Length
+                                    $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                                }
+                                '/healthz' {
+                                    $response.StatusCode = 200
+                                    $response.ContentType = "text/plain"
+                                    $bytes = [System.Text.Encoding]::UTF8.GetBytes("OK")
+                                    $response.ContentLength64 = $bytes.Length
+                                    $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                                }
+                                default {
+                                    $response.StatusCode = 404
+                                    $msg = "Not Found"
+                                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($msg)
+                                    $response.ContentLength64 = $bytes.Length
+                                    $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                                }
+                            }
+                        }
+                        default {
+                            $response.StatusCode = 405
                         }
                     }
+
+                    $remoteAddr = if ($request.RemoteEndPoint) { $request.RemoteEndPoint.ToString() } else { "-" }
+                    New-LogMessage -Msg "$remoteAddr `"$($request.HttpMethod) $($request.Url.AbsolutePath)`" $($response.StatusCode)"
                 }
-                $Context = $ContextAsync.GetAwaiter().GetResult()
-                $Request = $Context.Request
-                $Response = $Context.Response
-
-                $Response.StatusCode = 200
-
-                if ($Request.HttpMethod -eq "GET" -and $Request.Url.LocalPath -in ("/", "/metrics")) {
-                    Try {
-                        $PromResponse = $this.Collect()
-                        $Response.AddHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-                    } catch {
-                        write-host $_
-                        $Response.StatusCode = 500
-                        $PromResponse = 'Internal Server Error'
-                    }
-                } else {
-                    $Response.StatusCode = 404
-                    $PromResponse = 'Page not found'
+                catch {
+                    $response.StatusCode = 500
+                    New-LogMessage -Msg "Error: $_"
+                }
+                finally {
+                    $response.OutputStream.Close()
                 }
 
-                # return results
-                $Buffer = [Text.Encoding]::UTF8.GetBytes($PromResponse)
-                $Response.ContentLength64 = $Buffer.Length
-                $Response.OutputStream.Write($Buffer, 0, $Buffer.Length)
-                $Response.Close()
-
-                $StatusCode = $Response.StatusCode
-                $Method = $Request.HttpMethod
-                $Path = $Request.Url.LocalPath
-                if ($null -eq $Request.RemoteEndPoint) {
-                    $RemoteAddr = "-"
-                } else {
-                    $RemoteAddr = $Request.RemoteEndPoint.ToString()
-                }
-                New-LogMessage -Msg "$RemoteAddr ""$Method $Path"" $StatusCode"
+                [System.GC]::Collect()
             }
-        } finally {
-            New-LogMessage -Msg "Stopping exporter."
-            $Http.Stop()
-            $Http.Close()
+        }
+        finally {
+            New-LogMessage -Msg "Stopping exporter"
+            $listener.Stop()
+            $listener.Close()
         }
     }
 }
 
-function New-LogMessage([String] $Msg) {
-    Write-Host "$(Get-Date -Format o) $Msg"
+function New-LogMessage([string] $Msg) {
+    Write-Information "$(Get-Date -Format o) $Msg"
 }
 
 function New-MetricDescriptor(
-    [Parameter(Mandatory = $true)][String] $Name,
-    [Parameter(Mandatory = $true)][MetricType] $Type,
-    [Parameter(Mandatory = $true)][String] $Help,
-    [string[]] $Labels
+    [Parameter(Mandatory)][string] $Name,
+    [Parameter(Mandatory)][MetricType] $Type,
+    [Parameter(Mandatory)][string] $Help,
+    [string[]] $Labels = @()
 ) {
     return [MetricDesc]::new($Name, $Type, $Help, $Labels)
 }
+
 function New-PrometheusExporter(
-    [Parameter(Mandatory = $true)][uint32] $Port
+    [Parameter(Mandatory)][uint32] $Port
 ) {
     return [Exporter]::new($Port)
 }
 
 function Register-Collector (
-    [Parameter(Mandatory = $true)][Exporter] $Exporter,
-    [Parameter(Mandatory = $true)][ScriptBlock] $Collector
+    [Parameter(Mandatory)][Exporter] $Exporter,
+    [Parameter(Mandatory)][ScriptBlock] $Collector
 ) {
-    $exporter.Register($Collector)
+    $Exporter.Register($Collector)
 }
 
 function New-Metric (
-    [Parameter(Mandatory = $true)][MetricDesc] $MetricDesc,
-    [Parameter(Mandatory = $true)][float] $Value,
-    [string[]] $Labels
+    [Parameter(Mandatory)][MetricDesc] $MetricDesc,
+    [Parameter(Mandatory)][float] $Value,
+    [string[]] $Labels = @()
 ) {
     return [Metric]::new($MetricDesc, $Value, $Labels)
 }
