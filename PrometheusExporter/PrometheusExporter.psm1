@@ -135,58 +135,64 @@ class Exporter {
         try {
             while ($listener.IsListening) {
                 $context = $listener.GetContextAsync().GetAwaiter().GetResult()
-                $request = $context.Request
-                $response = $context.Response
 
-                try {
-                    switch ($request.HttpMethod) {
-                        'GET' {
-                            switch ($request.Url.AbsolutePath) {
-                                '/' {
-                                    $metricsText = $this.Collect()
-                                    $response.ContentType = "text/plain; version=0.0.4; charset=utf-8"
-                                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($metricsText)
-                                    $response.ContentLength64 = $bytes.Length
-                                    $response.OutputStream.Write($bytes, 0, $bytes.Length)
-                                }
-                                '/metrics' {
-                                    $metricsText = $this.Collect()
-                                    $response.ContentType = "text/plain; version=0.0.4; charset=utf-8"
-                                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($metricsText)
-                                    $response.ContentLength64 = $bytes.Length
-                                    $response.OutputStream.Write($bytes, 0, $bytes.Length)
-                                }
-                                '/healthz' {
-                                    $response.StatusCode = 200
-                                    $response.ContentType = "text/plain"
-                                    $bytes = [System.Text.Encoding]::UTF8.GetBytes("OK")
-                                    $response.ContentLength64 = $bytes.Length
-                                    $response.OutputStream.Write($bytes, 0, $bytes.Length)
-                                }
-                                default {
-                                    $response.StatusCode = 404
-                                    $msg = "Not Found"
-                                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($msg)
-                                    $response.ContentLength64 = $bytes.Length
-                                    $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                # Explizites .NET-Delegate für parallele Ausführung
+                $action = [System.Action] {
+                    try {
+                        $request = $context.Request
+                        $response = $context.Response
+
+                        switch ($request.HttpMethod) {
+                            'GET' {
+                                switch ($request.Url.AbsolutePath) {
+                                    '/' {
+                                        $metricsText = $this.Collect()
+                                        $response.ContentType = "text/plain; version=0.0.4; charset=utf-8"
+                                        $bytes = [System.Text.Encoding]::UTF8.GetBytes($metricsText)
+                                        $response.ContentLength64 = $bytes.Length
+                                        $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                                    }
+                                    '/metrics' {
+                                        $metricsText = $this.Collect()
+                                        $response.ContentType = "text/plain; version=0.0.4; charset=utf-8"
+                                        $bytes = [System.Text.Encoding]::UTF8.GetBytes($metricsText)
+                                        $response.ContentLength64 = $bytes.Length
+                                        $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                                    }
+                                    '/healthz' {
+                                        $response.StatusCode = 200
+                                        $response.ContentType = "text/plain"
+                                        $bytes = [System.Text.Encoding]::UTF8.GetBytes("OK")
+                                        $response.ContentLength64 = $bytes.Length
+                                        $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                                    }
+                                    default {
+                                        $response.StatusCode = 404
+                                        $msg = "Not Found"
+                                        $bytes = [System.Text.Encoding]::UTF8.GetBytes($msg)
+                                        $response.ContentLength64 = $bytes.Length
+                                        $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                                    }
                                 }
                             }
+                            default {
+                                $response.StatusCode = 405
+                            }
                         }
-                        default {
-                            $response.StatusCode = 405
-                        }
-                    }
 
-                    $remoteAddr = if ($request.RemoteEndPoint) { $request.RemoteEndPoint.ToString() } else { "-" }
-                    New-LogMessage -Msg "$remoteAddr `"$($request.HttpMethod) $($request.Url.AbsolutePath)`" $($response.StatusCode)"
+                        $remoteAddr = if ($request.RemoteEndPoint) { $request.RemoteEndPoint.ToString() } else { "-" }
+                        New-LogMessage -Msg "$remoteAddr `"$($request.HttpMethod) $($request.Url.AbsolutePath)`" $($response.StatusCode)"
+                    }
+                    catch {
+                        $context.Response.StatusCode = 500
+                        New-LogMessage -Msg "Error: $_"
+                    }
+                    finally {
+                        $context.Response.OutputStream.Close()
+                    }
                 }
-                catch {
-                    $response.StatusCode = 500
-                    New-LogMessage -Msg "Error: $_"
-                }
-                finally {
-                    $response.OutputStream.Close()
-                }
+
+                [System.Threading.Tasks.Task]::Run($action) | Out-Null
 
                 [System.GC]::Collect()
             }
