@@ -156,13 +156,6 @@ class Exporter {
                                     $response.ContentLength64 = $bytes.Length
                                     $response.OutputStream.Write($bytes, 0, $bytes.Length)
                                 }
-                                '/healthz' {
-                                    $response.StatusCode = 200
-                                    $response.ContentType = "text/plain"
-                                    $bytes = [System.Text.Encoding]::UTF8.GetBytes("OK")
-                                    $response.ContentLength64 = $bytes.Length
-                                    $response.OutputStream.Write($bytes, 0, $bytes.Length)
-                                }
                                 default {
                                     $response.StatusCode = 404
                                     $msg = "Not Found"
