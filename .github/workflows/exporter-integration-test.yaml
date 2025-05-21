@@ -1,0 +1,54 @@
+name: Exporter Integration Test
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  integration-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Run Exporter and test /healthz
+        shell: pwsh
+        run: |
+          $script = Join-Path $PWD "tests" "exporter.ps1"
+
+          # Start exporter in background
+          $proc = Start-Process pwsh -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script -PassThru
+          Write-Host "Started exporter (PID $($proc.Id))"
+
+          # Wait for exporter to start
+          $maxAttempts = 10
+          $attempt = 0
+          $healthy = $false
+
+          while (-not $healthy -and $attempt -lt $maxAttempts) {
+              Start-Sleep -Seconds 1
+              try {
+                  $response = Invoke-WebRequest -Uri http://localhost:9700/healthz -UseBasicParsing -TimeoutSec 2
+                  if ($response.StatusCode -eq 200 -and $response.Content -eq "OK") {
+                      Write-Host "Health check passed"
+                      $healthy = $true
+                  }
+              } catch {
+                  Write-Host "Health check failed (attempt $attempt): $($_.Exception.Message)"
+              }
+              $attempt++
+          }
+
+          if (-not $healthy) {
+              Write-Error "Exporter did not respond on /healthz after $maxAttempts seconds."
+              Stop-Process -Id $proc.Id -Force
+              exit 1
+          }
+
+          # Stop the exporter
+          Stop-Process -Id $proc.Id -Force
+
